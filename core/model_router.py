@@ -49,28 +49,44 @@ class ModelRouter:
         """
         start_time = time.time()
         try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=stream
-            )
+            # 构建请求参数
+            request_params = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": stream,
+            }
+             # 如果启用流式，则添加 stream_options
+            if stream:
+                request_params["stream_options"] = {"include_usage": True}
+
+            response = self.client.chat.completions.create(**request_params)
 
             if stream:
                 # 流式模式下，返回生成器
                 def stream_wrapper():
                     collected_content = ""
+                    final_usage = None   # 用于存放最终的 usage
+                    
                     for chunk in response:
+                        if chunk.usage:
+                            final_usage = chunk.usage
+                            continue
                         if chunk.choices[0].delta.content:
-                            collected_content += chunk.choices[0].delta.content
-                            yield chunk.choices[0].delta.content
-                    # 流式完成后记录成本（但流式不返回usage，这里简单记录token用时为0，正式可用tiktoken估算）
-                    # 暂时只记录延迟
+                            content_piece = chunk.choices[0].delta.content
+                            collected_content += content_piece
+                            yield content_piece
+                            
+                        # 流式完成后，用最终获取的usage来记录成本
                     latency = time.time() - start_time
-                    print(f"\n[Stream] 耗时 {latency:.2f}s，流式内容长度 {len(collected_content)} 字符")
-                    # 如果你后续需要精确成本，可以在流式结束后用tiktoken估算，此处先留作思考题
+                    if final_usage:
+                        self._log_cost(model, final_usage, latency)
+                        print(f"\n[Stream] 耗时 {latency:.2f}s, Token: in {final_usage.prompt_tokens} / out {final_usage.completion_tokens}")
+                    else:
+                        print(f"\n[Stream] 耗时 {latency:.2f}s，未能获取到usage信息进行成本记录。")
                 return stream_wrapper()
+                    
             else:
                 # 非流式，直接解析
                 latency = time.time() - start_time
