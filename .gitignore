@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+
+# 运行时生成的成本记录
+core/cost.csv
