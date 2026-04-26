@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from model_router import ModelRouter
+import wikipedia
 
 # ---------- 1. 定义工具（你的Agent的双手）----------
 def calculator(expression: str) -> str:
@@ -21,10 +22,45 @@ def get_current_time(format: str = "%Y-%m-%d %H:%M:%S") -> str:
     """获取当前时间，默认格式为年-月-日 时:分:秒"""
     return datetime.now().strftime(format)
 
+def search_wikipedia(query: str, sentences: int = 3) -> str:
+    """
+    搜索维基百科，返回摘要。处理歧义和页面未找到情况。
+    """
+    try:
+        wikipedia.set_lang("zh")
+        try:
+            page = wikipedia.page(query)
+            summary = wikipedia.summary(query, sentences=sentences)
+            return f"维基百科条目 '{page.title}'：\n{summary}\n链接：{page.url}"
+        except wikipedia.DisambiguationError as e:
+            options = e.options[:3]
+            return f"关键词 '{query}' 有歧义，可能指的是：{', '.join(options)}。请选择更具体的词重试。"
+        except wikipedia.PageError:
+            search_results = wikipedia.search(query, results=3)
+            if not search_results:
+                return f"在维基百科中没有找到与 '{query}' 相关的结果。"
+            page = wikipedia.page(search_results[0])
+            summary = wikipedia.summary(search_results[0], sentences=sentences)
+            return f"搜索 '{query}' 最接近的条目 '{page.title}'：\n{summary}\n链接：{page.url}"
+    except Exception as e:
+        return f"维基百科查询出错：{str(e)}"
+
+def get_wikipedia_page_content(title: str, sentences: int = 10) -> str:
+    """获取指定维基百科页面的详细内容。"""
+    try:
+        wikipedia.set_lang("zh")
+        summary = wikipedia.summary(title, sentences=sentences)
+        page = wikipedia.page(title)
+        return f"页面 '{title}' 内容：\n{summary}\n链接：{page.url}"
+    except Exception as e:
+        return f"获取页面内容出错：{str(e)}"
+
 # 工具注册表：名字 → 函数
 TOOLS = {
     "calculator": calculator,
-    "get_current_time": get_current_time
+    "get_current_time": get_current_time,
+    "search_wikipedia": search_wikipedia,
+    "get_wikipedia_page_content": get_wikipedia_page_content
 }
 
 # ---------- 2. 工具们的“说明书”（JSON Schema，写给模型看的）----------
@@ -42,6 +78,22 @@ TOOL_SCHEMAS = [
         "parameters": {
             "format": {"type": "string", "description": "时间格式，默认为 %Y-%m-%d %H:%M:%S"}
         }
+    },
+    {
+        "name": "search_wikipedia",
+        "description": "搜索维基百科，获取某个主题的摘要信息。当需要了解事实、概念或背景知识时使用。",
+        "parameters": {
+            "query": {"type": "string", "description": "搜索关键词"},
+            "sentences": {"type": "integer", "description": "返回的摘要句子数，默认3"}
+        }
+    },
+    {
+        "name": "get_wikipedia_page_content",
+        "description": "获取指定维基百科页面的详细内容。当search_wikipedia提示有歧义，或需要深入阅读某个具体条目时使用。",
+        "parameters": {
+            "title": {"type": "string", "description": "确切的维基百科页面标题"},
+            "sentences": {"type": "integer", "description": "返回的摘要句子数，默认10"}
+        }
     }
 ]
 
@@ -56,9 +108,11 @@ SYSTEM_PROMPT = """你是一个能使用工具的AI助手。你必须严格按�
 
 注意：
 1. 只能使用提供的工具。
-2. 数学计算必须使用 calculator 工具。
-3. 时间相关问题必须使用 get_current_time 工具。
-4. 不要猜测，工具结果给出什么就用什么。
+2. 知识类、事实类问题必须优先使用 search_wikipedia 工具。
+3. 如果 search_wikipedia 返回“歧义”，应使用 get_wikipedia_page_content 明确其中一个条目。
+4. 数学计算必须使用 calculator 工具。
+5. 时间相关问题必须使用 get_current_time 工具。
+6. 不要猜测，工具结果给出什么就用什么。
 """
 
 class Agent:
@@ -166,3 +220,6 @@ if __name__ == "__main__":
     
     # 测试2：需要时间
     print(agent.run("现在是几点几分？"))
+
+    # 测试3：需要查维基百科
+    print(agent.run("人工智能中的Transformer是什么？"))
