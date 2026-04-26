@@ -4,28 +4,44 @@ from core.agent import Agent
 agent = Agent()
 
 def chat_with_agent(message, history):
-    """
-    message: 当前用户输入
-    history: messages 格式的对话历史 [{"role": "user", "content": "..."}, ...]
-    """
-    # 1. 把当前用户消息追加到历史里
+    # 添加用户消息
     history.append({"role": "user", "content": message})
-    
+    # 先占个位，显示初始状态
+    history.append({"role": "assistant", "content": "🤔 正在思考，请稍候..."})
+    yield history
+
+    status_log = []         # 收集思考过程
+    def update_status(msg):
+        status_log.append(msg)
+        # 实时在界面显示最新状态，但不覆盖最终答案
+        combined = "\n".join(status_log)
+        history[-1] = {"role": "assistant", "content": f"🤔 **思考中...**\n\n> {combined}"}
+        yield history
+
     try:
-        # 2. 调用Agent
-        bot_response = agent.run(message)
+        final_answer = agent.run(
+            user_query=message,
+            history=history[:-1],
+            status_callback=update_status
+        )
     except Exception as e:
-        bot_response = f"❌ Agent 出错：{str(e)}"
-    
-    # 3. 把机器人的回复也追加到历史里
-    history.append({"role": "assistant", "content": bot_response})
-    
-    return history
+        final_answer = f"❌ Agent 出错：{str(e)}"
+
+    # 最终答案：思考过程折叠，答案放在下面
+    process_text = "\n> ".join(status_log) if status_log else "无思考过程"
+    formatted_answer = (
+        f"**💭 思考过程：**\n"
+        f"> {process_text}\n\n"
+        f"**📝 最终回答：**\n"
+        f"{final_answer}"
+    )
+    history[-1] = {"role": "assistant", "content": formatted_answer}
+    yield history
 
 # 构建界面
 with gr.Blocks(title="我的 AI 助手") as demo:
     gr.Markdown("# 🤖 我的 AI 助手")
-    gr.Markdown("一个能查维基百科、计算、报时的智能体。")
+    gr.Markdown("一个能查百科、计算、报时的智能体。")
     
     # Gradio 6.x 中 Chatbot 已默认使用 messages 格式，无需 type 参数
     chatbot = gr.Chatbot(label="对话窗口", height=500)
