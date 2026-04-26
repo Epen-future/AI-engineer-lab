@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from model_router import ModelRouter
+from core.model_router import ModelRouter
 import wikipedia
 
 # ---------- 1. 定义工具（你的Agent的双手）----------
@@ -22,10 +22,20 @@ def get_current_time(format: str = "%Y-%m-%d %H:%M:%S") -> str:
     """获取当前时间，默认格式为年-月-日 时:分:秒"""
     return datetime.now().strftime(format)
 
+def _set_wikipedia_timeout(timeout=5):
+    """为 wikipedia 库的底层 requests 会话设置全局超时"""
+    import requests
+    try:
+        # 较新版本的 wikipedia 使用 requests.Session
+        wikipedia.requests.Session().timeout = timeout
+    except:
+        pass  # 旧版本可能没有 requests.Session，直接忽略
+
 def search_wikipedia(query: str, sentences: int = 3) -> str:
     """
-    搜索维基百科，返回摘要。处理歧义和页面未找到情况。
+    搜索维基百科，返回摘要。内置超时与异常处理。
     """
+    _set_wikipedia_timeout(5)
     try:
         wikipedia.set_lang("zh")
         try:
@@ -42,17 +52,25 @@ def search_wikipedia(query: str, sentences: int = 3) -> str:
             page = wikipedia.page(search_results[0])
             summary = wikipedia.summary(search_results[0], sentences=sentences)
             return f"搜索 '{query}' 最接近的条目 '{page.title}'：\n{summary}\n链接：{page.url}"
+        except Exception as e:
+            # 捕获网络超时等异常，新版 requests 的 Timeout 异常会被此捕获
+            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+                return f"维基百科查询超时：'{query}' 目前访问较慢，请稍后再试。"
+            return f"维基百科查询错误：{str(e)}"
     except Exception as e:
         return f"维基百科查询出错：{str(e)}"
 
 def get_wikipedia_page_content(title: str, sentences: int = 10) -> str:
-    """获取指定维基百科页面的详细内容。"""
+    """获取指定维基百科页面的详细内容，内置超时。"""
+    _set_wikipedia_timeout(5)
     try:
         wikipedia.set_lang("zh")
         summary = wikipedia.summary(title, sentences=sentences)
         page = wikipedia.page(title)
         return f"页面 '{title}' 内容：\n{summary}\n链接：{page.url}"
     except Exception as e:
+        if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+            return f"获取页面 '{title}' 内容超时。"
         return f"获取页面内容出错：{str(e)}"
 
 # 工具注册表：名字 → 函数
