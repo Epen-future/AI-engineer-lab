@@ -4,6 +4,10 @@ from core.model_router import ModelRouter
 import requests
 from bs4 import BeautifulSoup
 
+class Step:
+    def __init__(self, message):
+        self.message = message
+
 # ---------- 1. 定义工具（你的Agent的双手）----------
 def calculator(expression: str) -> str:
     """
@@ -204,6 +208,113 @@ class Agent:
                 continue
 
         return "Agent思考轮次超过上限，任务终止。请简化你的问题。"
+    
+    def run_stream(self, user_query: str, history: list = None, status_callback=None):
+        """
+        流式版 Agent，yield Step(状态) 或 str(token)。
+        """
+        def emit(msg):
+            if status_callback:
+                status_callback(msg)
+            print(msg)
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_query})
+
+        print(f"\n{'='*60}")
+        print(f"当前上下文长度：{len(messages)} 条消息")
+        print(f"用户最新输入：{user_query}")
+
+        for iteration in range(self.max_iterations):
+            emit(f"💭 第 {iteration + 1} 轮思考中...")
+            yield Step(f"💭 第 {iteration + 1} 轮思考中...")
+
+            # 这一轮用非流式获取结构化决策
+            try:
+                response = self.router.chat(
+                    messages=messages,
+                    model="deepseek-v4-flash",
+                    temperature=0.0,
+                    max_tokens=2048
+                )
+                print(f"模型原始输出：{response[:300]}...")
+            except Exception as e:
+                yield Step(f"❌ 调用失败：{e}")
+                return
+
+            # 解析 JSON
+            try:
+                action_json = json.loads(response)
+            except json.JSONDecodeError:
+                try:
+                    start = response.index('{')
+                    end = response.rindex('}') + 1
+                    action_json = json.loads(response[start:end])
+                except:
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({"role": "user", "content": "格式错误，请重新输出JSON。"})
+                    continue
+
+            thought = action_json.get("thought", "无思考过程")
+            emit(f"🤔 {thought}")
+            yield Step(f"🤔 {thought}")
+
+            action = action_json.get("action")
+
+            if action == "tool":
+                tool_name = action_json.get("tool_name")
+                tool_params = action_json.get("tool_params", {})
+                emit(f"🔧 调用工具：{tool_name}")
+                yield Step(f"🔧 调用工具：{tool_name}...")
+
+                if tool_name not in TOOLS:
+                    error_msg = f"工具 '{tool_name}' 不存在"
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({"role": "user", "content": error_msg})
+                    continue
+
+                tool_func = TOOLS[tool_name]
+                try:
+                    tool_result = tool_func(**tool_params)
+                except TypeError as e:
+                    tool_result = f"参数错误：{e}"
+
+                emit(f"📦 工具结果：{tool_result[:100]}...")
+                yield Step(f"📦 工具结果：{tool_result[:100]}...")
+
+                messages.append({"role": "assistant", "content": response})
+                messages.append({"role": "user", "content": f"工具执行结果：{tool_result}"})
+
+            elif action == "finish":
+                # 进入最终答案阶段，改用流式生成
+                emit("✅ 生成最终答案...")
+                yield Step("✅ 生成最终答案...")
+
+                # 构造一个专门用于生成答案的 prompt：包含所有上下文，要求直接回答
+                answer_messages = messages + [
+                    {"role": "assistant", "content": "请根据以上所有信息，用自然语言直接回答用户的问题，不要输出JSON，直接给出回答。"}
+                ]
+                try:
+                    stream = self.router.chat_stream(
+                        messages=answer_messages,
+                        model="deepseek-v4-flash",
+                        temperature=0.7,
+                        max_tokens=2048
+                    )
+                    for token in stream:
+                        yield token  # 这里产出的是普通字符串，即答案片段
+                except Exception as e:
+                    yield f"❌ 流式生成失败：{e}"
+                return  # 结束整个循环
+
+            else:
+                messages.append({"role": "assistant", "content": response})
+                messages.append({"role": "user", "content": f"无法识别的action类型：'{action}'。只允许'tool'或'finish'。"})
+                continue
+
+        yield "Agent思考轮次超过上限。"
 
 # ---------- 4. 测试 ----------
 if __name__ == "__main__":

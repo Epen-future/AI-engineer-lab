@@ -100,11 +100,33 @@ class ModelRouter:
                 print(f"[{model}] 耗时: {latency:.2f}s | Token: in {usage.prompt_tokens} / out {usage.completion_tokens} | 花费: $? (已记录)")
                 
                 return content
-
         except Exception as e:
-            # 网络抖动、API限流等任何异常，这里捕获并打印，然后向上抛
             print(f"[Error] 模型调用失败: {e}")
             raise e
+
+    def chat_stream(self, messages, model="deepseek-v4-flash", temperature=0.7, max_tokens=1024):
+            """
+            流式对话生成器，逐 token yield 字符串，不记录精确成本。
+            """
+            start_time = time.time()
+            full_content = ""
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+                for chunk in response:
+                    if chunk.choices[0].delta.content:
+                        token = chunk.choices[0].delta.content
+                        full_content += token
+                        yield token
+                latency = time.time() - start_time
+                print(f"\n[Stream] 耗时 {latency:.2f}s，总输出长度 {len(full_content)} 字符")
+            except Exception as e:
+                yield f"\n[Stream Error: {e}]"
 
 
 # ----------- test -----------
