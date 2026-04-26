@@ -97,7 +97,7 @@ class ModelRouter:
                 self._log_cost(model, usage, latency)
                 
                 # 在控制台给你即时反馈
-                print(f"[{model}] 耗时: {latency:.2f}s | Token: in {usage.prompt_tokens} / out {usage.completion_tokens} | 花费: $0.000? (已记录)")
+                print(f"[{model}] 耗时: {latency:.2f}s | Token: in {usage.prompt_tokens} / out {usage.completion_tokens} | 花费: $? (已记录)")
                 
                 return content
 
