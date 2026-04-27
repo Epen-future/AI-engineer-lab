@@ -1,22 +1,45 @@
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import json
 import logging
+import os
 from typing import List, AsyncGenerator
-
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from core.schemas import ChatRequest, ChatResponse, Message
 from core.agent import Agent, Step  # 使用你已经具备流式能力的 Agent
+from core.auth import verify_api_key
 import time
 
 # ---------- 日志配置 ----------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+import logging
+from logging.handlers import RotatingFileHandler
+
+# 创建日志目录
+os.makedirs("logs", exist_ok=True)
+
+# 配置根日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        RotatingFileHandler("logs/server.log", maxBytes=5*1024*1024, backupCount=3),
+        logging.StreamHandler()  # 仍然输出到控制台
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # ---------- 初始化 FastAPI ----------
 app = FastAPI(title="AI Agent API", version="1.0.0")
+
+# 初始化限流器
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # 允许跨域（前端调试用）
 app.add_middleware(
@@ -37,12 +60,11 @@ def build_history(history: List[Message]) -> list:
 
 # ---------- 1. 非流式端点 ----------
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+    logger.info(f"非流式请求 来源={request.client.host} 问题={request.query[:50]}...")
     try:
-        logger.info(f"收到非流式请求: {request.query[:50]}...")
         history_dicts = build_history(request.history)
-
-        # 调用 Agent 的同步 run 方法
         thoughts = []
         def collect_thought(msg):
             thoughts.append(msg)
@@ -52,34 +74,31 @@ async def chat(request: ChatRequest):
             history=history_dicts,
             status_callback=collect_thought
         )
-        
+        logger.info(f"非流式请求完成 回答长度={len(answer)}")
         return ChatResponse(answer=answer, thought_process=thoughts)
     except Exception as e:
-        logger.error(f"非流式请求处理失败: {str(e)}")
+        logger.error(f"非流式请求失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------- 2. 流式端点 (SSE) ----------
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat_stream(request: ChatRequest, api_key: str = Depends(verify_api_key)):
+    logger.info(f"流式请求 来源={request.client.host} 问题={request.query[:50]}...")
+
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            logger.info(f"收到流式请求: {request.query[:50]}...")
             history_dicts = build_history(request.history)
-            
-            # 运行流式 Agent，逐个产出 Step 或 token
             for item in agent.run_stream(request.query, history=history_dicts):
                 if isinstance(item, Step):
-                    # 思考步骤：通过 type: thought 事件发送
                     yield f"event: thought\ndata: {json.dumps({'message': item.message})}\n\n"
                 else:
-                    # 答案 token：通过 type: token 事件发送
                     yield f"event: token\ndata: {json.dumps({'token': item})}\n\n"
-                time.sleep(0.02)  # 可选：给前端渲染时间，实现打字机效果
-            
-            # 发送结束事件
+                await asyncio.sleep(0.02)
             yield "event: done\ndata: [DONE]\n\n"
+            logger.info("流式请求完成")
         except Exception as e:
-            logger.error(f"流式请求处理失败: {str(e)}")
+            logger.error(f"流式请求失败: {str(e)}", exc_info=True)
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -88,7 +107,7 @@ async def chat_stream(request: ChatRequest):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
+            "X-Accel-Buffering": "no"
         }
     )
 
