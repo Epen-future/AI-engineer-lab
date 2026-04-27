@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的 AI 助手</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            display: flex; justify-content: center; align-items: center; height: 100vh;
+        }
+        .chat-container {
+            width: 90%; max-width: 800px; height: 90vh;
+            background: white; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+            display: flex; flex-direction: column; overflow: hidden;
+        }
+        .chat-header {
+            padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; text-align: center; font-size: 1.2em; font-weight: 600;
+        }
+        .chat-messages {
+            flex: 1; overflow-y: auto; padding: 20px;
+            display: flex; flex-direction: column; gap: 16px;
+        }
+        .message {
+            max-width: 80%; padding: 12px 18px; border-radius: 18px;
+            line-height: 1.6; word-break: break-word;
+        }
+        .user-message {
+            align-self: flex-end; background: #667eea; color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .bot-message {
+            align-self: flex-start; background: #f1f0f0; color: #333;
+            border-bottom-left-radius: 4px; white-space: pre-wrap;
+        }
+        .thought-block {
+            font-size: 0.85em; color: #666; margin-bottom: 8px;
+            padding: 8px; background: #fff9e6; border-radius: 8px;
+            border-left: 3px solid #ffc107; max-width: 90%;
+        }
+        .chat-input-area {
+            display: flex; padding: 20px; border-top: 1px solid #eee; background: #fafafa;
+        }
+        #userInput {
+            flex: 1; padding: 12px 16px; border: 1px solid #ddd;
+            border-radius: 25px; font-size: 1em; outline: none;
+        }
+        #userInput:focus { border-color: #667eea; }
+        #sendBtn {
+            margin-left: 12px; padding: 0 24px; background: #667eea;
+            border: none; border-radius: 25px; color: white; font-weight: 600;
+            cursor: pointer; transition: background 0.2s;
+        }
+        #sendBtn:hover { background: #5a6fd6; }
+        #sendBtn:disabled { background: #ccc; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+<div class="chat-container">
+    <div class="chat-header">🤖 我的 AI 助手</div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input-area">
+        <input type="text" id="userInput" placeholder="输入你的问题..." autofocus />
+        <button id="sendBtn" onclick="sendMessage()">发送</button>
+    </div>
+</div>
+
+<script>
+    const API_BASE = 'http://127.0.0.1:8000';
+    const chatMessages = document.getElementById('chatMessages');
+    const userInput = document.getElementById('userInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    // 对话历史数组（与 API 交互格式一致）
+    let conversationHistory = [];
+
+    // 添加一条消息到界面
+    function addMessage(role, content, isThought = false) {
+        const div = document.createElement('div');
+        div.className = role === 'user' ? 'message user-message' : 'message bot-message';
+        if (isThought) {
+            div.className = 'thought-block';
+            div.innerHTML = '💭 ' + content;
+        } else {
+            div.textContent = content;
+        }
+        chatMessages.appendChild(div);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        return div;
+    }
+
+    async function sendMessage() {
+        const query = userInput.value.trim();
+        if (!query) return;
+
+        // 禁用输入
+        userInput.disabled = true;
+        sendBtn.disabled = true;
+
+        // 显示用户消息
+        addMessage('user', query);
+        conversationHistory.push({ role: 'user', content: query });
+
+        // 创建一个持久的 bot 消息块，用于流式更新
+        const botDiv = addMessage('assistant', '');
+        const thoughtDiv = document.createElement('div');
+        thoughtDiv.className = 'thought-block';
+        botDiv.prepend(thoughtDiv);
+
+        let thoughtLog = [];
+        let answerBuffer = '';
+
+        try {
+            const response = await fetch(`${API_BASE}/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, history: conversationHistory.slice(0, -1) })
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                // 保留最后一行（可能不完整）在 buffer 中
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    if (line.startsWith('event:')) continue;
+
+                    if (line.startsWith('data:')) {
+                        const dataStr = line.substring(5).trim();
+                        if (dataStr === '[DONE]') continue;
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            // 根据上一行的事件类型处理（我们需要保存 event 类型）
+                            // 简单处理：从上一个行获取 event 类型
+                        } catch (e) {}
+                    }
+                }
+            }
+
+            // 上面是标准 EventSource 解析，为了简单我们换个更易维护的方法：
+            // 由于 fetch 流式解析 SSE 比较繁琐，我们改用更简单的方式 —— 直接逐行解析
+        } catch (err) {
+            console.error(err);
+            answerBuffer = '❌ 请求失败：' + err.message;
+        }
+
+        // 改为用更清晰的 SSE 解析重新实现
+    }
+
+    // 重新实现 sendMessage，用 EventSource（注意：EventSource 只支持 GET，所以改回 fetch 手动解析）
+    // 已经在上面写了一半，这里给出完整可运行的版本：
+
+    async function sendMessageFinal() {
+        const query = userInput.value.trim();
+        if (!query) return;
+        userInput.disabled = true;
+        sendBtn.disabled = true;
+
+        addMessage('user', query);
+        conversationHistory.push({ role: 'user', content: query });
+
+        const botDiv = addMessage('assistant', '');
+        let thoughtDiv = null;
+        let answerBuffer = '';
+
+        try {
+            const response = await fetch(`${API_BASE}/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, history: conversationHistory.slice(0, -1) })
+            });
+
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let currentEvent = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (line.startsWith('event:')) {
+                        currentEvent = line.substring(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        const dataStr = line.substring(5).trim();
+                        if (currentEvent === 'thought') {
+                            const data = JSON.parse(dataStr);
+                            if (!thoughtDiv) {
+                                thoughtDiv = document.createElement('div');
+                                thoughtDiv.className = 'thought-block';
+                                botDiv.prepend(thoughtDiv);
+                            }
+                            thoughtDiv.textContent = '💭 ' + data.message;
+                        } else if (currentEvent === 'token') {
+                            const data = JSON.parse(dataStr);
+                            answerBuffer += data.token;
+                            botDiv.lastChild.textContent = answerBuffer;
+                        } else if (currentEvent === 'done') {
+                            // 完成，最终显示
+                            if (thoughtDiv) {
+                                thoughtDiv.style.display = 'none'; // 隐藏思考块，保持简洁
+                            }
+                            botDiv.textContent = answerBuffer;
+                            if (thoughtDiv) botDiv.prepend(thoughtDiv);
+                        } else if (currentEvent === 'error') {
+                            const data = JSON.parse(dataStr);
+                            answerBuffer = '❌ ' + data.error;
+                            botDiv.textContent = answerBuffer;
+                        }
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                }
+            }
+        } catch (err) {
+            console.error(err);
+            botDiv.textContent = '❌ 请求失败：' + err.message;
+        }
+
+        // 更新对话历史
+        if (answerBuffer) {
+            conversationHistory.push({ role: 'assistant', content: answerBuffer });
+        }
+
+        userInput.disabled = false;
+        sendBtn.disabled = false;
+        userInput.focus();
+    }
+
+    // 绑定发送函数
+    window.sendMessage = sendMessageFinal;
+    userInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') sendMessageFinal();
+    });
+</script>
+</body>
+</html>
